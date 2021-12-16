@@ -179,9 +179,10 @@ By default, this theme's sidebar has these two elements in it. If you'd like to
 override this behavior and control the sidebar on a per-page basis, use the
 `Sphinx html-sidebars configuration value <https://www.sphinx-doc.org/en/master/usage/configuration.html?highlight=html_sidebars#confval-html_sidebars>`_.
 
+.. _navigation-depth:
 
-Configure the navigation depth and collapsing of the sidebar
-============================================================
+Navigation depth and collapsing of the sidebar
+==============================================
 
 By default, this theme enables to expand/collapse subsections in the left
 sidebar navigation (without actually navigating to the page itself), and this extends
@@ -189,16 +190,56 @@ up to 4 levels deep:
 
 .. image:: /_static/demo-expandable-navigation.gif
 
-When having a site with many files and/or many levels, this can cause a long
-build time and larger HTML file sizes. Therefore, it is possible to turn off
-the expandable navigation by setting the `collapse_navigation` config option
-to True:
+
+Control how many navigation levels are shown by default
+-------------------------------------------------------
+
+You can control how many navigation levels are shown when a page is
+loaded. By default, this level is 1, and only top-level pages are shown,
+with drop-boxes to reveal their children. To make their children show up by
+default, you can use the following configuration in ``conf.py``:
 
 .. code:: python
 
    html_theme_options = {
-     "collapse_navigation": True
+     "show_nav_level": 2
    }
+
+This will make the first two navigations show up by default (AKA, top-level
+pages and their immediate children).
+
+.. _remove_toctrees:
+
+Selectively remove pages from your sidebar
+------------------------------------------
+
+.. note::
+
+   This and the following sections are useful for sites that have a lot of pages (such as API
+   documentation with a lot of items). These take much longer to build and will have large
+   output sizes because of all the toctree links. These sections help with this problem,
+   ordered from least-to-most drastic.
+
+You can prevent pages from showing up in the navigation bar using a Sphinx
+extension called `sphinx-remove-toctrees <https://github.com/executablebooks/sphinx-remove-toctrees>`_.
+This is useful if your documentation generates lots of "stub pages" in a folder,
+which is common with API documentation.
+
+This lets you add a configuration like so:
+
+.. code-block::
+
+   remove_from_toctrees = ["folder_one/generated/*"]
+
+and any pages that are inside of ``folder_one/generated/`` will not show up in the sidebar.
+
+Check out the `sphinx-remove-toctrees documentation <https://github.com/executablebooks/sphinx-remove-toctrees#install>`_
+for information about how to install and use this extension.
+
+.. _navigation-levels:
+
+Control the number of navigation levels
+---------------------------------------
 
 In addition, you can also control how many levels of the navigation are shown
 in the sidebar (with a default of 4):
@@ -209,6 +250,18 @@ in the sidebar (with a default of 4):
      "navigation_depth": 2
    }
 
+
+Remove reveal buttons for sidebar items
+---------------------------------------
+
+It is possible to turn off the expandable navigation entirely by setting
+the `collapse_navigation` config option to True:
+
+.. code:: python
+
+   html_theme_options = {
+     "collapse_navigation": True
+   }
 
 
 Hiding the previous and next buttons
@@ -222,6 +275,198 @@ at the bottom. You can hide these buttons with the following configuration:
    html_theme_options = {
      "show_prev_next": False
    }
+
+
+Add a dropdown to switch between docs versions
+==============================================
+
+You can add a button to your site that allows users to
+switch between versions of your documentation. The links in the version
+switcher will differ depending on which page of the docs is being viewed. For
+example, on the page ``https://mysite.org/en/v2.0/changelog.html``, the
+switcher links will go to ``changelog.html`` in the other versions of your
+docs. When clicked, the switcher will check for the existence of that page, and
+if it doesn't exist, redirect to the homepage of that docs version instead.
+
+The switcher requires the following configuration steps:
+
+1. Add a JSON file containing a list of the documentation versions that the
+   switcher should show on each page.
+
+2. Add a configuration dictionary called ``switcher`` to the
+   ``html_theme_options`` dict in ``conf.py``. ``switcher`` should have 3 keys:
+
+   - ``json_url``: the persistent location of the JSON file described above.
+   - ``url_template``: a template string used to generate the correct URLs for
+     the different documentation versions.
+   - ``version_match``: a string stating the version of the documentation that
+     is currently being browsed.
+
+3. Specify where to place the switcher in your page layout. For example, add
+   the ``"version-switcher"`` template to one of the layout lists in
+   ``html_theme_options`` (e.g., ``navbar_end``, ``footer_items``, etc).
+
+Below is a more in-depth description of each of these configuration steps.
+
+
+Add a JSON file to define your switcher's versions
+--------------------------------------------------
+
+First, write a JSON file stating which versions of your docs will be listed in
+the switcher's dropdown menu. That file should contain a list of entries that
+each have one or two fields:
+
+- ``version``: a version string. This will be inserted into
+  ``switcher['url_template']`` to create the links to other docs versions, and
+  also checked against ``switcher['version_match']`` to provide styling to the
+  switcher.
+- ``name``: an optional name to display in the switcher dropdown instead of the
+  version string (e.g., "latest", "stable", "dev", etc).
+
+Here is an example JSON file:
+
+.. code:: json
+
+    [
+        {
+            "name": "v2.1 (stable)",
+            "version": "2.1"
+        },
+        {
+            "version": "2.0"
+        },
+        {
+            "version": "1.0"
+        },
+    ]
+
+See the discussion of ``switcher['json_url']`` (below) for options of where to
+save the JSON file.
+
+
+Configure ``switcher['json_url']``
+----------------------------------
+
+The JSON file needs to be at a stable, persistent, fully-resolved URL (i.e.,
+not specified as a path relative to the sphinx root of the current doc build).
+Each version of your documentation should point to the same URL, so that as new
+versions are added to the JSON file all the older versions of the docs will
+gain switcher dropdown entries linking to the new versions. This could be done
+a few different ways:
+
+- The location could be one that is always associated with the most recent
+  documentation build (i.e., if your docs server aliases "latest" to the most
+  recent version, it could point to a location in the build tree of version
+  "latest"). For example:
+
+  .. code:: python
+
+      html_theme_options = {
+          ...,
+          "switcher": {
+              "json_url": "https://mysite.org/en/latest/_static/switcher.json",
+          }
+      }
+
+  In this case the JSON is versioned alongside the rest of the docs pages but
+  only the most recent version is ever loaded (even by older versions of the
+  docs).
+
+- The JSON could be saved in a folder that is listed under your site's
+  ``html_static_path`` configuration. See `the Sphinx static path documentation
+  <https://www.sphinx-doc.org/en/master/usage/configuration.html#confval-html_static_path>`_
+  for more information.
+
+- The JSON could be stored outside the doc build trees. This probably means it
+  would be outside the software repo, and would require you to add new version
+  entries to the JSON file manually as part of your release process. Example:
+
+  .. code:: python
+
+      html_theme_options = {
+          ...,
+          "switcher": {
+              "json_url": "https://mysite.org/switcher.json",
+          }
+      }
+
+
+Configure ``switcher['url_template']``
+--------------------------------------
+
+The switcher's links to other versions of your docs are made by combining the
+*version strings* from the JSON file with a *template string* you provide in
+``switcher['url_template']``. The template string must contain a placeholder
+``{version}`` and otherwise be a fully-resolved URL. For example:
+
+.. code:: python
+
+    html_theme_options = {
+        ...,
+        "switcher": {
+            "url_template": "https://mysite.org/en/version-{version}/",
+        }
+    }
+
+The example above will result in a link to
+``https://mysite.org/en/version-1.0/`` for the JSON entry for version
+``"1.0"``.
+
+
+Configure ``switcher['version_match']``
+---------------------------------------
+
+This configuration value tells the switcher what docs version is currently
+being viewed, and is used to style the switcher (i.e., to highlight the current
+docs version in the switcher's dropdown menu, and to change the text displayed
+on the switcher button).
+
+Typically you can re-use one of the sphinx variables ``version``
+or ``release`` as the value of ``switcher['version_match']``; which one you use
+depends on how granular your docs versioning is. See
+`the Sphinx "project info" documentation
+<https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information>`__
+for more information). Example:
+
+.. code:: python
+
+    version = my_package_name.__version__.replace("dev0", "")  # may differ
+    html_theme_options = {
+        ...,
+        "switcher": {
+            "version_match": version,
+        }
+    }
+
+
+Specify where to display the switcher
+-------------------------------------
+
+Finally, tell the theme where on your site's pages you want the switcher to
+appear. There are many choices here: you can add ``"version-switcher"`` to one
+of the locations in ``html_theme_options`` (e.g., ``navbar_end``,
+``footer_items``, etc). For example:
+
+.. code:: python
+
+   html_theme_options = {
+      ...,
+      "navbar_end": ["version-switcher"]
+   }
+
+
+Alternatively, you could override one of the other templates to include the
+version switcher in a sidebar. For example, you could define
+``_templates/sidebar-nav-bs.html`` as:
+
+.. code:: jinja
+
+    {%- include 'version-switcher.html' -%}
+    {{ super() }}
+
+to insert a version switcher at the top of the left sidebar, while still
+keeping the default navigation below it. See :doc:`sections` for more
+information.
 
 
 Add an Edit this Page button
@@ -480,3 +725,14 @@ template is added to your list. For example:
 .. meta::
    :description lang=en:
        Configuration options for pydata-sphinx-theme
+
+Improve build speed and performance
+===================================
+
+By default this theme includes all of your documentation links in a collapsible sidebar.
+However, this may slow down your documentation builds considerably if you have
+a lot of documentation pages. This is most common with documentation for projects
+with a large API, which use the ``.. autosummary::`` directive to generate
+API documentation.
+
+To improve the performance of your builds in these cases, see :ref:`navigation-depth`.
