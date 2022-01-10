@@ -1,11 +1,13 @@
-<div class="container-xl bd-breadcrumbs-container">
-  <ul class="bd-breadcrumbs">
-    {% block breadcrumbs %}
-      <li><a href="{{ pathto(master_doc) }}" class="fa fa-home"></a></li>
-        {% for doc in parents %}
-          <li><a href="{{ doc.link|e }}">{{ doc.title }}</a></li>
-        {% endfor %}
-      <li>{{ title }}</li>
-    {% endblock %}
-  </ul>
+<div class="bd-breadcrumbs-container">
+  <div class="container-xl">
+    <ul class="bd-breadcrumbs">
+      {% block breadcrumbs %}
+        <li><a href="{{ pathto(master_doc) }}" class="fa fa-home"></a></li>
+          {% for doc in parents %}
+            <li><a href="{{ doc.link|e }}">{{ doc.title }}</a></li>
+          {% endfor %}
+        <li>{{ title }}</li>
+      {% endblock %}
+    </ul>
+  </div>
 </div>
