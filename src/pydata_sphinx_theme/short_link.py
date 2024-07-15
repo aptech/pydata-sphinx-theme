@@ -1,5 +1,6 @@
 """A custom Transform object to shorten github and gitlab links."""
 
+from typing import ClassVar
 from urllib.parse import ParseResult, urlparse, urlunparse
 
 from docutils import nodes
@@ -29,11 +30,14 @@ class ShortenLinkTransform(SphinxPostTransform):
 
     default_priority = 400
     formats = ("html",)
-    supported_platform = {"github.com": "github", "gitlab.com": "gitlab"}
+    supported_platform: ClassVar[dict[str, str]] = {
+        "github.com": "github",
+        "gitlab.com": "gitlab",
+    }
     platform = None
 
     def run(self, **kwargs):
-        """run the Transform object."""
+        """Run the Transform object."""
         matcher = NodeMatcher(nodes.reference)
         # TODO: just use "findall" once docutils min version >=0.18.1
         for node in traverse_or_findall(self.document, matcher):
@@ -59,7 +63,6 @@ class ShortenLinkTransform(SphinxPostTransform):
             the reformated url title
         """
         path = uri.path
-
         if path == "":
             # plain url passed, return platform only
             return self.platform
@@ -95,12 +98,18 @@ class ShortenLinkTransform(SphinxPostTransform):
                 map(uri.path.__contains__, ["issues", "merge_requests"])
             ):
                 group_and_subgroups, parts, *_ = path.split("/-/")
-                parts = parts.split("/")
-                url_type, element_number, *_ = parts
-                if url_type == "issues":
-                    text = f"{group_and_subgroups}#{element_number}"
-                elif url_type == "merge_requests":
-                    text = f"{group_and_subgroups}!{element_number}"
+                parts = parts.rstrip("/")
+                if "/" not in parts:
+                    text = f"{group_and_subgroups}/{parts}"
+                else:
+                    parts = parts.split("/")
+                    url_type, element_number, *_ = parts
+                    if not element_number:
+                        text = group_and_subgroups
+                    elif url_type == "issues":
+                        text = f"{group_and_subgroups}#{element_number}"
+                    elif url_type == "merge_requests":
+                        text = f"{group_and_subgroups}!{element_number}"
             else:
                 # display the whole uri (after "gitlab.com/") including parameters
                 # for example "<group>/<subgroup1>/<subgroup2>/<repository>"

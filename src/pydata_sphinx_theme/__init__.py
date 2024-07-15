@@ -9,13 +9,12 @@ from urllib.parse import urlparse
 import requests
 from requests.exceptions import ConnectionError, HTTPError, RetryError
 from sphinx.application import Sphinx
+from sphinx.builders.dirhtml import DirectoryHTMLBuilder
 from sphinx.errors import ExtensionError
 
-from .bootstrap_html_translator import BootstrapHTML5Translator
+from . import edit_this_page, logo, pygments, short_link, toctree, translator, utils
 
-from . import edit_this_page, logo, pygment, short_link, toctree, translator, utils
-
-__version__ = "0.15.3dev0"
+__version__ = "0.15.4"
 
 
 def update_config(app):
@@ -27,40 +26,15 @@ def update_config(app):
     theme_options = utils.get_theme_options_dict(app)
     warning = partial(utils.maybe_warn, app)
 
-    # TODO: deprecation; remove after 0.14 release
-    if theme_options.get("logo_text"):
-        logo = theme_options.get("logo", {})
-        logo["text"] = theme_options.get("logo_text")
-        theme_options["logo"] = logo
-        warning(
-            "The configuration `logo_text` is deprecated. Use `'logo': {'text': }`."
-        )
-
-    # TODO: DEPRECATE after 0.14
-    if theme_options.get("footer_items"):
-        theme_options["footer_start"] = theme_options.get("footer_items")
-        warning(
-            "`footer_items` is deprecated. Use `footer_start` or `footer_end` instead."
-        )
-
-    # TODO: DEPRECATE after v0.15
-    if theme_options.get("favicons"):
-        warning(
-            "The configuration `favicons` is deprecated. "
-            "Use the sphinx-favicon extension instead."
-        )
-
-    # TODO: in 0.15, set the default navigation_with_keys value to False and remove this deprecation notice
-    if theme_options.get("navigation_with_keys", None) is None:
-        warning(
-            "The default value for `navigation_with_keys` will change to `False` in "
-            "the next release. If you wish to preserve the old behavior for your site, "
-            "set `navigation_with_keys=True` in the `html_theme_options` dict in your "
-            "`conf.py` file. Be aware that `navigation_with_keys = True` has negative "
-            "accessibility implications: "
-            "https://github.com/pydata/pydata-sphinx-theme/issues/1492"
-        )
-        theme_options["navigation_with_keys"] = False
+    # TODO: DEPRECATE after v1.0
+    themes = ["light", "dark"]
+    for theme in themes:
+        if style := theme_options.get(f"pygment_{theme}_style"):
+            theme_options[f"pygments_{theme}_style"] = style
+            warning(
+                f'The parameter "pygment_{theme}_style" was renamed to '
+                f'"pygments_{theme}_style" (note the "s" on "pygments").'
+            )
 
     # Validate icon links
     if not isinstance(theme_options.get("icon_links", []), list):
@@ -184,6 +158,9 @@ def update_config(app):
         theme_logo = {}
     if not isinstance(theme_logo, dict):
         raise ValueError(f"Incorrect logo config type: {type(theme_logo)}")
+    theme_logo_link = theme_options.get("theme_logo_link")
+    if theme_logo_link:
+        theme_logo["link"] = theme_logo_link
     theme_options["logo"] = theme_logo
 
 
@@ -264,29 +241,48 @@ def update_and_remove_templates(
     context["theme_version"] = __version__
 
 
+def _fix_canonical_url(
+    app: Sphinx, pagename: str, templatename: str, context: dict, doctree
+) -> None:
+    """Fix the canonical URL when using the dirhtml builder.
+
+    Sphinx builds a canonical URL if ``html_baseurl`` config is set. However,
+    it builds a URL ending with ".html" when using the dirhtml builder, which is
+    incorrect. Detect this and generate the correct URL for each page.
+
+    Workaround for https://github.com/sphinx-doc/sphinx/issues/9730; can be removed
+    when that is fixed, released, and available in our minimum supported Sphinx version.
+    """
+    if (
+        not app.config.html_baseurl
+        or not isinstance(app.builder, DirectoryHTMLBuilder)
+        or not context["pageurl"]
+        or not context["pageurl"].endswith(".html")
+    ):
+        return
+
+    target = app.builder.get_target_uri(pagename)
+    context["pageurl"] = app.config.html_baseurl + target
+
+
 def setup(app: Sphinx) -> Dict[str, str]:
     """Setup the Sphinx application."""
     here = Path(__file__).parent.resolve()
     theme_path = here / "theme" / "pydata_sphinx_theme"
-    app.add_html_theme("pydata_sphinx_theme", str(theme_path))
 
-    app.set_translator("html", BootstrapHTML5Translator)
-    # Read the Docs uses ``readthedocs`` as the name of the build, and also
-    # uses a special "dirhtml" builder so we need to replace these both with
-    # our custom HTML builder
-    app.set_translator("readthedocs", BootstrapHTML5Translator, override=True)
-    app.set_translator("readthedocsdirhtml", BootstrapHTML5Translator, override=True)
+    app.add_html_theme("pydata_sphinx_theme", str(theme_path))
 
     app.add_post_transform(short_link.ShortenLinkTransform)
 
     app.connect("builder-inited", translator.setup_translators)
     app.connect("builder-inited", update_config)
+    app.connect("html-page-context", _fix_canonical_url)
     app.connect("html-page-context", edit_this_page.setup_edit_url)
     app.connect("html-page-context", toctree.add_toctree_functions)
     app.connect("html-page-context", update_and_remove_templates)
     app.connect("html-page-context", logo.setup_logo_path)
     app.connect("html-page-context", utils.set_secondary_sidebar_items)
-    app.connect("build-finished", pygment.overwrite_pygments_css)
+    app.connect("build-finished", pygments.overwrite_pygments_css)
     app.connect("build-finished", logo.copy_logo_images)
 
     # https://www.sphinx-doc.org/en/master/extdev/i18n.html#extension-internationalization-i18n-and-localization-l10n-using-i18n-api
@@ -295,4 +291,4 @@ def setup(app: Sphinx) -> Dict[str, str]:
     # Include component templates
     app.config.templates_path.append(str(theme_path / "components"))
 
-    return {"parallel_read_safe": True, "parallel_write_safe": False}
+    return {"parallel_read_safe": True, "parallel_write_safe": True}

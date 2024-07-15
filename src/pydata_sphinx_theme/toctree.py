@@ -1,8 +1,10 @@
 """Methods to build the toctree used in the html pages."""
 
+from dataclasses import dataclass
 from functools import cache
 from itertools import count
-from typing import Iterator, List, Union
+from textwrap import dedent
+from typing import Iterator, List, Tuple, Union
 from urllib.parse import urlparse
 
 import sphinx
@@ -49,6 +51,16 @@ def _get_ancestor_pagename(app: Sphinx, pagename: str, startdepth: int) -> str:
         # toctree.get_toctree_for(pagename, app.builder, collapse, **kwargs)
         out = None
     return out, toctree
+
+
+@dataclass
+class LinkInfo:
+    """Dataclass to generate toctree data."""
+
+    is_current: bool
+    href: str
+    title: str
+    is_external: bool
 
 
 def add_toctree_functions(
@@ -101,14 +113,13 @@ def add_toctree_functions(
         return next(get_or_create_id_generator(base_id))
 
     @cache
-    def generate_header_nav_before_dropdown(n_links_before_dropdown):
-        """The cacheable part."""
-        try:
-            n_links_before_dropdown = int(n_links_before_dropdown)
-        except Exception:
-            raise ValueError(
-                f"n_links_before_dropdown is not an int: {n_links_before_dropdown}"
-            )
+    def _generate_nav_info() -> List[LinkInfo]:
+        """Generate informations necessary to generate nav.
+
+        Instead of messing with html later, having this as a util function
+        should make it slightly easier to generate different html snippet for
+        sidebar or navbar.
+        """
         toctree = TocTree(app.env)
 
         # Find the active header navigation item so we decide whether to highlight
@@ -119,14 +130,14 @@ def add_toctree_functions(
             # NOTE: `env.toctree_includes` is a dict mapping pagenames to any (possibly
             # hidden) TocTree directives on that page (i.e., the "child" pages nested
             # under `pagename`).
-            active_header_page = [
-                *_get_toctree_ancestors(app.env.toctree_includes, pagename)
-            ]
+            header_pages = [*_get_toctree_ancestors(app.env.toctree_includes, pagename)]
         else:
-            active_header_page = toctree.get_toctree_ancestors(pagename)
-        if active_header_page:
+            header_pages = toctree.get_toctree_ancestors(pagename)
+        if header_pages:
             # The final list item will be the top-most ancestor
-            active_header_page = active_header_page[-1]
+            active_header_page = header_pages[-1]
+        else:
+            active_header_page = None
 
         # NOTE: `env.tocs` is a dict mapping pagenames to hierarchical bullet-lists
         # ("nodetrees" in Sphinx parlance) of in-page headings (including `toctree::`
@@ -134,7 +145,8 @@ def add_toctree_functions(
         # just below the root of our site
         root_toc = app.env.tocs[app.config.root_doc]
 
-        links_html = []
+        links_data = []
+
         # Iterate through each node in the root document toc.
         # Grab the toctree pages and find the relative link + title.
         for toc in traverse_or_findall(root_toc, TocTreeNodeClass):
@@ -145,7 +157,6 @@ def add_toctree_functions(
                 page = toc.attributes["parent"] if page == "self" else page
 
                 # If this is the active ancestor page, add a class so we highlight it
-                current = " current active" if page == active_header_page else ""
 
                 # sanitize page title for use in the html output if needed
                 if title is None:
@@ -162,45 +173,90 @@ def add_toctree_functions(
                 # If it's an absolute one then we use the external class and
                 # the complete url.
                 is_absolute = bool(urlparse(page).netloc)
-                link_status = "external" if is_absolute else "internal"
                 link_href = page if is_absolute else context["pathto"](page)
 
-                # create the html output
-                links_html.append(
-                    f"""
-                    <li class="nav-item{current}">
-                      <a class="nav-link nav-{link_status}" href="{link_href}">
-                        {title}
-                      </a>
-                    </li>
-                """
+                links_data.append(
+                    LinkInfo(
+                        is_current=(page == active_header_page),
+                        href=link_href,
+                        title=title,
+                        is_external=is_absolute,
+                    )
                 )
 
         # Add external links defined in configuration as sibling list items
         for external_link in context["theme_external_links"]:
+            links_data.append(
+                LinkInfo(
+                    is_current=False,
+                    href=external_link["url"],
+                    title=external_link["name"],
+                    is_external=True,
+                )
+            )
+
+        return links_data
+
+    @cache
+    def _generate_header_nav_before_dropdown(
+        n_links_before_dropdown,
+    ) -> Tuple[str, List[str]]:
+        """Return html for navbar and dropdown.
+
+        Given the number of links before the dropdown, return the html for the navbar,
+        as well as the list of links to put in a dropdown.
+
+        Returns:
+            - HTML str for the navbar
+            - list of HTML str for the dropdown
+        """
+        try:
+            n_links_before_dropdown = int(n_links_before_dropdown)
+        except Exception:
+            raise ValueError(
+                f"n_links_before_dropdown is not an int: {n_links_before_dropdown}"
+            )
+        links_data = _generate_nav_info()
+
+        links_html = []
+        links_dropdown = []
+        boilerplate = dedent(
+            """
+            <li class="{nav_item} {active}">
+              <a class="{nav_link} nav-{ext_int}" href="{href}">
+                {title}
+              </a>
+            </li>
+            """
+        )
+        nav_item = "nav-item"
+        nav_link = "nav-link"
+        dropdown_item = "dropdown-item"
+        for link in links_data[:n_links_before_dropdown]:
             links_html.append(
-                f"""
-                <li class="nav-item">
-                  <a class="nav-link nav-external" href="{ external_link["url"] }">
-                    { external_link["name"] }
-                  </a>
-                </li>
-                """
+                boilerplate.format(
+                    active="current active" if link.is_current else "",
+                    nav_link=nav_link,
+                    nav_item=nav_item,
+                    ext_int="external" if link.is_external else "internal",
+                    href=link.href,
+                    title=link.title,
+                )
+            )
+        for link in links_data[n_links_before_dropdown:]:
+            links_dropdown.append(
+                boilerplate.format(
+                    active="current active" if link.is_current else "",
+                    nav_link=nav_link + " " + dropdown_item,
+                    nav_item="",
+                    ext_int="external" if link.is_external else "internal",
+                    href=link.href,
+                    title=link.title,
+                )
             )
 
         # The first links will always be visible
-        links_solo = links_html[:n_links_before_dropdown]
-        out = "\n".join(links_solo)
-
-        # Wrap the final few header items in a "more" dropdown
-        links_dropdown = [
-            # 🐲 brittle code, relies on the assumption that the code above
-            # gives each link in the nav a `nav-link` CSS class
-            html.replace("nav-link", "nav-link dropdown-item")
-            for html in links_html[n_links_before_dropdown:]
-        ]
-
-        return out, links_dropdown
+        return "\n".join(links_html), links_dropdown
 
     def generate_header_nav_html(
         n_links_before_dropdown: int = 5, dropdown_text: str = "More"
@@ -223,7 +279,7 @@ def add_toctree_functions(
             n_links_before_dropdown:The number of links to show before nesting the remaining links in a Dropdown element.
             dropdown_text:Text of the dropdown element button.
         """
-        out, links_dropdown = generate_header_nav_before_dropdown(
+        out, links_dropdown = _generate_header_nav_before_dropdown(
             n_links_before_dropdown
         )
 
@@ -336,10 +392,8 @@ def add_toctree_functions(
 
             # Open the sidebar navigation to the proper depth
             for ii in range(int(show_nav_level)):
-                for checkbox in soup.select(
-                    f"li.toctree-l{ii} > input.toctree-checkbox"
-                ):
-                    checkbox.attrs["checked"] = None
+                for details in soup.select(f"li.toctree-l{ii} > details"):
+                    details["open"] = "open"
 
         return soup
 
@@ -419,8 +473,6 @@ def add_collapse_checkboxes(soup: BeautifulSoup) -> None:
     """Add checkboxes to collapse children in a toctree."""
     # based on https://github.com/pradyunsg/furo
 
-    toctree_checkbox_count = 0
-
     for element in soup.find_all("li", recursive=True):
         # We check all "li" elements, to add a "current-page" to the correct li.
         classes = element.get("class", [])
@@ -429,7 +481,7 @@ def add_collapse_checkboxes(soup: BeautifulSoup) -> None:
         if "current" in classes:
             parentli = element.find_parent("li", class_="toctree-l0")
             if parentli:
-                parentli.select("p.caption ~ input")[0].attrs["checked"] = ""
+                parentli.find("details")["open"] = None
 
         # Nothing more to do, unless this has "children"
         if not element.find("ul"):
@@ -438,40 +490,86 @@ def add_collapse_checkboxes(soup: BeautifulSoup) -> None:
         # Add a class to indicate that this has children.
         element["class"] = [*classes, "has-children"]
 
-        # We're gonna add a checkbox.
-        toctree_checkbox_count += 1
-        checkbox_name = f"toctree-checkbox-{toctree_checkbox_count}"
-
-        # Add the "label" for the checkbox which will get filled.
         if soup.new_tag is None:
             continue
 
-        label = soup.new_tag(
-            "label", attrs={"for": checkbox_name, "class": "toctree-toggle"}
-        )
-        label.append(soup.new_tag("i", attrs={"class": "fa-solid fa-chevron-down"}))
-        if "toctree-l0" in classes:
-            # making label cover the whole caption text with css
-            label["class"] = "label-parts"
-        element.insert(1, label)
+        # For table of contents nodes that have subtrees, we modify the HTML so
+        # that the subtree can be expanded or collapsed in the browser.
+        #
+        # The HTML markup tree at the parent node starts with this structure:
+        #
+        # - li.has-children
+        #   - a.reference or p.caption
+        #   - ul
+        #
+        # Note the first child of li.has-children is p.caption only if this node
+        # is a section heading. (This only happens when show_nav_level is set to
+        # 0.)
+        #
+        # Now we modify the tree structure in one of two ways.
+        #
+        # (1) If the node holds a section heading, the HTML tree will be
+        # modified like so:
+        #
+        # - li.has-children
+        #   - details
+        #     - summary
+        #       - p.caption
+        #       - .toctree-toggle
+        #     - ul
+        #
+        # (2) Otherwise, if the node holds a link to a page in the docs:
+        #
+        # - li.has-children
+        #   - a.reference
+        #   - details
+        #     - summary
+        #       - .toctree-toggle
+        #   - ul
+        #
+        # Why the difference? In the first case, the TOC section heading is not
+        # a link, but in the second case it is. So in the first case it makes
+        # sense to put the (non-link) text inside the summary tag so that the
+        # user can click either the text or the .toctree-toggle chevron icon to
+        # expand/collapse the TOC subtree. But in the second case, putting the
+        # link in the summary tag would make it unclear whether clicking on the
+        # link should expand the subtree or take you to the link.
 
-        # Add the checkbox that's used to store expanded/collapsed state.
-        checkbox = soup.new_tag(
-            "input",
+        # Create <details> and put the entire subtree into it
+        details = soup.new_tag("details")
+        details.extend(element.contents)
+        element.append(details)
+
+        # Hoist the link to the top if there is one
+        toc_link = element.select_one("details > a.reference")
+        if toc_link:
+            element.insert(0, toc_link)
+
+        # Create <summary> with chevron icon
+        summary = soup.new_tag("summary")
+        span = soup.new_tag(
+            "span",
             attrs={
-                "type": "checkbox",
-                "class": ["toctree-checkbox"],
-                "id": checkbox_name,
-                "name": checkbox_name,
+                "class": "toctree-toggle",
+                "role": "presentation",  # This element and the chevron it contains are purely decorative; the actual expand/collapse functionality is delegated to the <summary> tag
             },
         )
+        span.append(soup.new_tag("i", attrs={"class": "fa-solid fa-chevron-down"}))
+        summary.append(span)
 
-        # if this has a "current" class, be expanded by default
-        # (by checking the checkbox)
+        # Prepend section heading (if there is one) to <summary>
+        collapsible_section_heading = element.select_one("details > p.caption")
+        if collapsible_section_heading:
+            # Put heading inside summary so that the heading text (and chevron) are both clickable
+            summary.insert(0, collapsible_section_heading)
+
+        # Prepend <summary> to <details>
+        details.insert(0, summary)
+
+        # If this TOC node has a "current" class, be expanded by default
+        # (by opening the details/summary disclosure widget)
         if "current" in classes:
-            checkbox.attrs["checked"] = ""
-
-        element.insert(1, checkbox)
+            details["open"] = "open"
 
 
 def get_nonroot_toctree(

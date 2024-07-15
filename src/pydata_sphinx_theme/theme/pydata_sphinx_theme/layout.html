@@ -7,7 +7,8 @@
 {%- extends "basic/layout.html" %}
 {%- import "static/webpack-macros.html" as _webpack with context %}
 {# A flag for whether we include a secondary sidebar based on the page metadata #}
-{% set remove_sidebar_secondary = (meta is defined and meta is not none and 'html_theme.sidebar_secondary.remove' in meta) or not theme_secondary_sidebar_items %}
+{# Note: secondary_sidebar_items is an array set by set_secondary_sidebar_items() in utils.py #}
+{% set remove_sidebar_secondary = (meta is defined and meta is not none and 'html_theme.sidebar_secondary.remove' in meta) or secondary_sidebar_items|length == 0 %}
 {%- block css %}
   {# The data-cfasync attribute disables CloudFlare's Rocket loader so that #}
   {# mode/theme are correctly set before the browser renders the page. #}
@@ -35,7 +36,7 @@
 
   {# A button hidden by default to help assistive devices quickly jump to main content #}
   {# ref: https://www.youtube.com/watch?v=VUR0I5mqq7I #}
-  <a id="pst-skip-link" class="skip-link" href="#main-content">{{ _("Skip to main content") }}</a>
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">{{ _("Skip to main content") }}</a></div>
 
 {%- endblock %}
 
@@ -47,33 +48,30 @@
   {# the scroll to top button #}
   <button type="button" class="btn rounded-pill" id="pst-back-to-top">
     <i class="fa-solid fa-arrow-up"></i>
-    {{ _("Back to top") }}
+    {{- _("Back to top") -}}
   </button>
   {%- endif %}
 
   {# checkbox to toggle primary sidebar #}
   <input type="checkbox"
           class="sidebar-toggle"
-          name="__primary"
-          id="__primary"/>
-  <label class="overlay overlay-primary" for="__primary"></label>
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
   {# Checkboxes to toggle the secondary sidebar #}
   <input type="checkbox"
           class="sidebar-toggle"
-          name="__secondary"
-          id="__secondary"/>
-  <label class="overlay overlay-secondary" for="__secondary"></label>
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
   {# A search field pop-up that will only show when the search button is clicked #}
   <div class="search-button__wrapper">
     <div class="search-button__overlay"></div>
     <div class="search-button__search-container">{% include "../components/search-field.html" %}</div>
   </div>
 
-  {%- if theme_announcement -%}
-    {% include "sections/announcement.html" %}
-  {%- endif %}
+  {% include "sections/announcement.html" %}
+
   {% block docs_navbar %}
-    <header class="bd-header navbar navbar-expand-lg bd-navbar">
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
       {%- include "sections/header.html" %}
     </header>
     {%- include "breadcrumbs-section.html" %}
@@ -96,7 +94,7 @@
           <div class="bd-content">
             <div class="bd-article-container">
               {# Article header #}
-              <div class="bd-header-article">{% include "sections/header-article.html" %}</div>
+              <div class="bd-header-article d-print-none">{% include "sections/header-article.html" %}</div>
               {# Article content #}
               {% block docs_body %}
               {# This is empty and only shows up if text has been highlighted by the URL #}
@@ -113,7 +111,7 @@
               {% endif %}
               {# prev-next buttons #}
               {% if theme_show_prev_next %}
-                <footer class="prev-next-footer">
+                <footer class="prev-next-footer d-print-none">
                   {% include "components/prev-next.html" %}
                 </footer>
               {% endif %}
