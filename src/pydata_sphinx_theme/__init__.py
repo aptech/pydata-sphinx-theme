@@ -1,526 +1,298 @@
-"""
-Bootstrap-based sphinx theme from the PyData community
-"""
-import os
-from pathlib import Path
+"""Bootstrap-based sphinx theme from the PyData community."""
 
-import jinja2
-from bs4 import BeautifulSoup as bs
-from sphinx import addnodes
-from sphinx.environment.adapters.toctree import TocTree
+import json
+from functools import partial
+from pathlib import Path
+from typing import Dict
+from urllib.parse import urlparse
+
+import requests
+from requests.exceptions import ConnectionError, HTTPError, RetryError
+from sphinx.application import Sphinx
 from sphinx.errors import ExtensionError
-from sphinx.util import logging
 
 from .bootstrap_html_translator import BootstrapHTML5Translator
 
-__version__ = "0.7.2"
+from . import edit_this_page, logo, pygment, short_link, toctree, translator, utils
 
-logger = logging.getLogger(__name__)
+__version__ = "0.15.3dev0"
 
 
-def update_config(app, env):
-    theme_options = app.config["html_theme_options"]
-    if theme_options.get("search_bar_position") == "navbar":
-        logger.warn(
-            (
-                "Deprecated config `search_bar_position` used."
-                "Use `search-field.html` in `navbar_end` template list instead."
-            )
+def update_config(app):
+    """Update config with new default values and handle deprecated keys."""
+    # By the time `builder-inited` happens, `app.builder.theme_options` already exists.
+    # At this point, modifying app.config.html_theme_options will NOT update the
+    # page's HTML context (e.g. in jinja, `theme_keyword`).
+    # To do this, you must manually modify `app.builder.theme_options`.
+    theme_options = utils.get_theme_options_dict(app)
+    warning = partial(utils.maybe_warn, app)
+
+    # TODO: deprecation; remove after 0.14 release
+    if theme_options.get("logo_text"):
+        logo = theme_options.get("logo", {})
+        logo["text"] = theme_options.get("logo_text")
+        theme_options["logo"] = logo
+        warning(
+            "The configuration `logo_text` is deprecated. Use `'logo': {'text': }`."
         )
+
+    # TODO: DEPRECATE after 0.14
+    if theme_options.get("footer_items"):
+        theme_options["footer_start"] = theme_options.get("footer_items")
+        warning(
+            "`footer_items` is deprecated. Use `footer_start` or `footer_end` instead."
+        )
+
+    # TODO: DEPRECATE after v0.15
+    if theme_options.get("favicons"):
+        warning(
+            "The configuration `favicons` is deprecated. "
+            "Use the sphinx-favicon extension instead."
+        )
+
+    # TODO: in 0.15, set the default navigation_with_keys value to False and remove this deprecation notice
+    if theme_options.get("navigation_with_keys", None) is None:
+        warning(
+            "The default value for `navigation_with_keys` will change to `False` in "
+            "the next release. If you wish to preserve the old behavior for your site, "
+            "set `navigation_with_keys=True` in the `html_theme_options` dict in your "
+            "`conf.py` file. Be aware that `navigation_with_keys = True` has negative "
+            "accessibility implications: "
+            "https://github.com/pydata/pydata-sphinx-theme/issues/1492"
+        )
+        theme_options["navigation_with_keys"] = False
+
+    # Validate icon links
     if not isinstance(theme_options.get("icon_links", []), list):
         raise ExtensionError(
-            (
-                "`icon_links` must be a list of dictionaries, you provided "
-                f"type {type(theme_options.get('icon_links'))}."
-            )
+            "`icon_links` must be a list of dictionaries, you provided "
+            f"type {type(theme_options.get('icon_links'))}."
         )
 
+    # Set the anchor link default to be # if the user hasn't provided their own
+    if not utils.config_provided_by_user(app, "html_permalinks_icon"):
+        app.config.html_permalinks_icon = "#"
 
-def update_templates(app, pagename, templatename, context, doctree):
-    """Update template names for page build."""
+    # check the validity of the theme switcher file
+    is_dict = isinstance(theme_options.get("switcher"), dict)
+    should_test = theme_options.get("check_switcher", True)
+    if is_dict and should_test:
+        theme_switcher = theme_options.get("switcher")
+
+        # raise an error if one of these compulsory keys is missing
+        json_url = theme_switcher["json_url"]
+        theme_switcher["version_match"]
+
+        # try to read the json file. If it's a url we use request,
+        # else we simply read the local file from the source directory
+        # display a log warning if the file cannot be reached
+        reading_error = None
+        if urlparse(json_url).scheme in ["http", "https"]:
+            try:
+                request = requests.get(json_url)
+                request.raise_for_status()
+                content = request.text
+            except (ConnectionError, HTTPError, RetryError) as e:
+                reading_error = repr(e)
+        else:
+            try:
+                content = Path(app.srcdir, json_url).read_text()
+            except FileNotFoundError as e:
+                reading_error = repr(e)
+
+        if reading_error is not None:
+            warning(
+                f'The version switcher "{json_url}" file cannot be read due to '
+                f"the following error:\n{reading_error}"
+            )
+        else:
+            # check that the json file is not illformed,
+            # throw a warning if the file is ill formed and an error if it's not json
+            switcher_content = json.loads(content)
+            missing_url = any(["url" not in e for e in switcher_content])
+            missing_version = any(["version" not in e for e in switcher_content])
+            if missing_url or missing_version:
+                warning(
+                    f'The version switcher "{json_url}" file is malformed; '
+                    'at least one of the items is missing the "url" or "version" key'
+                )
+
+    # Add an analytics ID to the site if provided
+    analytics = theme_options.get("analytics", {})
+    if analytics:
+        # Plausible analytics
+        plausible_domain = analytics.get("plausible_analytics_domain")
+        plausible_url = analytics.get("plausible_analytics_url")
+
+        # Ref: https://plausible.io/docs/plausible-script
+        if plausible_domain and plausible_url:
+            kwargs = {
+                "loading_method": "defer",
+                "data-domain": plausible_domain,
+                "filename": plausible_url,
+            }
+            app.add_js_file(**kwargs)
+
+        # Google Analytics
+        gid = analytics.get("google_analytics_id")
+        if gid:
+            gid_js_path = f"https://www.googletagmanager.com/gtag/js?id={gid}"
+            gid_script = f"""
+                window.dataLayer = window.dataLayer || [];
+                function gtag(){{ dataLayer.push(arguments); }}
+                gtag('js', new Date());
+                gtag('config', '{gid}');
+            """
+
+            # Link the JS files
+            app.add_js_file(gid_js_path, loading_method="async")
+            app.add_js_file(None, body=gid_script)
+
+    # Update ABlog configuration default if present
+    fa_provided = utils.config_provided_by_user(app, "fontawesome_included")
+    if "ablog" in app.config.extensions and not fa_provided:
+        app.config.fontawesome_included = True
+
+    # Handle icon link shortcuts
+    shortcuts = [
+        ("twitter_url", "fa-brands fa-square-twitter", "Twitter"),
+        ("bitbucket_url", "fa-brands fa-bitbucket", "Bitbucket"),
+        ("gitlab_url", "fa-brands fa-square-gitlab", "GitLab"),
+        ("github_url", "fa-brands fa-square-github", "GitHub"),
+    ]
+    # Add extra icon links entries if there were shortcuts present
+    # TODO: Deprecate this at some point in the future?
+    icon_links = theme_options.get("icon_links", [])
+    for url, icon, name in shortcuts:
+        if theme_options.get(url):
+            # This defaults to an empty list so we can always insert
+            icon_links.insert(
+                0,
+                {
+                    "url": theme_options.get(url),
+                    "icon": icon,
+                    "name": name,
+                    "type": "fontawesome",
+                },
+            )
+    theme_options["icon_links"] = icon_links
+
+    # Prepare the logo config dictionary
+    theme_logo = theme_options.get("logo")
+    if not theme_logo:
+        # In case theme_logo is an empty string
+        theme_logo = {}
+    if not isinstance(theme_logo, dict):
+        raise ValueError(f"Incorrect logo config type: {type(theme_logo)}")
+    theme_options["logo"] = theme_logo
+
+
+def update_and_remove_templates(
+    app: Sphinx, pagename: str, templatename: str, context, doctree
+) -> None:
+    """Update template names and assets for page build."""
+    # Allow for more flexibility in template names
     template_sections = [
         "theme_navbar_start",
         "theme_navbar_center",
+        "theme_navbar_persistent",
         "theme_navbar_end",
-        "theme_footer_items",
-        "theme_page_sidebar_items",
+        "theme_article_header_start",
+        "theme_article_header_end",
+        "theme_article_footer_items",
+        "theme_content_footer_items",
+        "theme_footer_start",
+        "theme_footer_center",
+        "theme_footer_end",
+        "theme_primary_sidebar_end",
         "sidebars",
     ]
-
     for section in template_sections:
         if context.get(section):
-            # Break apart `,` separated strings so we can use , in the defaults
-            if isinstance(context.get(section), str):
-                context[section] = [
-                    ii.strip() for ii in context.get(section).split(",")
-                ]
-
-            # Add `.html` to templates with no suffix
-            for ii, template in enumerate(context.get(section)):
-                if not os.path.splitext(template)[1]:
-                    context[section][ii] = template + ".html"
-
-
-def add_toctree_functions(app, pagename, templatename, context, doctree):
-    """Add functions so Jinja templates can add toctree objects."""
-
-    def generate_nav_html(kind, startdepth=None, show_nav_level=1, **kwargs):
-        """
-        Return the navigation link structure in HTML. Arguments are passed
-        to Sphinx "toctree" function (context["toctree"] below).
-
-        We use beautifulsoup to add the right CSS classes / structure for bootstrap.
-
-        See https://www.sphinx-doc.org/en/master/templating.html#toctree.
-
-        Parameters
-        ----------
-        kind : ["navbar", "sidebar", "raw"]
-            The kind of UI element this toctree is generated for.
-        startdepth : int
-            The level of the toctree at which to start. By default, for
-            the navbar uses the normal toctree (`startdepth=0`), and for
-            the sidebar starts from the second level (`startdepth=1`).
-        show_nav_level : int
-            The level of the navigation bar to toggle as visible on page load.
-            By default, this level is 1, and only top-level pages are shown,
-            with drop-boxes to reveal children. Increasing `show_nav_level`
-            will show child levels as well.
-
-        kwargs: passed to the Sphinx `toctree` template function.
-
-        Returns
-        -------
-        HTML string (if kind in ["navbar", "sidebar"])
-        or BeautifulSoup object (if kind == "raw")
-        """
-        if startdepth is None:
-            startdepth = 1 if kind == "sidebar" else 0
-
-        if startdepth == 0:
-            toc_sphinx = context["toctree"](**kwargs)
-        else:
-            # select the "active" subset of the navigation tree for the sidebar
-            toc_sphinx = index_toctree(app, pagename, startdepth, **kwargs)
-
-        soup = bs(toc_sphinx, "html.parser")
-
-        # pair "current" with "active" since that's what we use w/ bootstrap
-        for li in soup("li", {"class": "current"}):
-            li["class"].append("active")
-
-        # Remove navbar/sidebar links to sub-headers on the page
-        for li in soup.select("li"):
-            # Remove
-            if li.find("a"):
-                href = li.find("a")["href"]
-                if "#" in href and href != "#":
-                    li.decompose()
-
-        if kind == "navbar":
-            # Add CSS for bootstrap
-            for li in soup("li"):
-                li["class"].append("nav-item")
-                li.find("a")["class"].append("nav-link")
-            # only select li items (not eg captions)
-            out = "\n".join([ii.prettify() for ii in soup.find_all("li")])
-
-        elif kind == "sidebar":
-            # Add bootstrap classes for first `ul` items
-            for ul in soup("ul", recursive=False):
-                ul.attrs["class"] = ul.attrs.get("class", []) + ["nav", "bd-sidenav"]
-
-            # Add icons and labels for collapsible nested sections
-            _add_collapse_checkboxes(soup)
-
-            # Open the navbar to the proper depth
-            for ii in range(int(show_nav_level)):
-                for checkbox in soup.select(
-                    f"li.toctree-l{ii} > input.toctree-checkbox"
-                ):
-                    checkbox.attrs["checked"] = None
-            out = soup.prettify()
-
-        elif kind == "raw":
-            out = soup
-
-        return out
-
-    def generate_toc_html(kind="html"):
-        """Return the within-page TOC links in HTML."""
-
-        if "toc" not in context:
-            return ""
-
-        soup = bs(context["toc"], "html.parser")
-
-        # Add toc-hN + visible classes
-        def add_header_level_recursive(ul, level):
-            if ul is None:
-                return
-            if level <= (context["theme_show_toc_level"] + 1):
-                ul["class"] = ul.get("class", []) + ["visible"]
-            for li in ul("li", recursive=False):
-                li["class"] = li.get("class", []) + [f"toc-h{level}"]
-                add_header_level_recursive(li.find("ul", recursive=False), level + 1)
-
-        add_header_level_recursive(soup.find("ul"), 1)
-
-        # Add in CSS classes for bootstrap
-        for ul in soup("ul"):
-            ul["class"] = ul.get("class", []) + ["nav", "section-nav", "flex-column"]
-
-        for li in soup("li"):
-            li["class"] = li.get("class", []) + ["nav-item", "toc-entry"]
-            if li.find("a"):
-                a = li.find("a")
-                a["class"] = a.get("class", []) + ["nav-link"]
-
-        # If we only have one h1 header, assume it's a title
-        h1_headers = soup.select(".toc-h1")
-        if len(h1_headers) == 1:
-            title = h1_headers[0]
-            # If we have no sub-headers of a title then we won't have a TOC
-            if not title.select(".toc-h2"):
-                out = ""
-            else:
-                out = title.find("ul").prettify()
-        # Else treat the h1 headers as sections
-        else:
-            out = soup.prettify()
-
-        # Return the toctree object
-        if kind == "html":
-            return out
-        else:
-            return soup
-
-    def navbar_align_class():
-        """Return the class that aligns the navbar based on config."""
-        align = context.get("theme_navbar_align", "content")
-        align_options = {
-            "content": ("col-lg-9", "mr-auto"),
-            "left": ("", "mr-auto"),
-            "right": ("", "ml-auto"),
-        }
-        if align not in align_options:
-            raise ValueError(
-                (
-                    "Theme optione navbar_align must be one of"
-                    f"{align_options.keys()}, got: {align}"
-                )
+            context[section] = utils._update_and_remove_templates(
+                app=app,
+                context=context,
+                templates=context.get(section, []),
+                section=section,
+                templates_skip_empty_check=["sidebar-nav-bs.html", "navbar-nav.html"],
             )
-        return align_options[align]
 
-    def generate_google_analytics_script(id):
-        """Handle the two types of google analytics id."""
-        if id:
-            if "G-" in id:
-                script = f"""
-                <script
-                    async
-                    src='https://www.googletagmanager.com/gtag/js?id={id}'
-                ></script>
-                <script>
-                    window.dataLayer = window.dataLayer || [];
-                    function gtag(){{ dataLayer.push(arguments); }}
-                    gtag('js', new Date());
-                    gtag('config', '{id}');
-                </script>
-                """
-            else:
-                script = f"""
-                    <script
-                        async
-                        src='https://www.google-analytics.com/analytics.js'
-                    ></script>
-                    <script>
-                        window.ga = window.ga || function () {{
-                            (ga.q = ga.q || []).push(arguments) }};
-                        ga.l = +new Date;
-                        ga('create', '{id}', 'auto');
-                        ga('set', 'anonymizeIp', true);
-                        ga('send', 'pageview');
-                    </script>
-                """
-            soup = bs(script, "html.parser")
-            return soup
-        else:
-            return ""
-
-    context["generate_nav_html"] = generate_nav_html
-    context["generate_toc_html"] = generate_toc_html
-    context["navbar_align_class"] = navbar_align_class
-    context["generate_google_analytics_script"] = generate_google_analytics_script
-
-
-def _add_collapse_checkboxes(soup):
-    # based on https://github.com/pradyunsg/furo
-
-    toctree_checkbox_count = 0
-
-    for element in soup.find_all("li", recursive=True):
-        # We check all "li" elements, to add a "current-page" to the correct li.
-        classes = element.get("class", [])
-
-        # Nothing more to do, unless this has "children"
-        if not element.find("ul"):
-            continue
-
-        # Add a class to indicate that this has children.
-        element["class"] = classes + ["has-children"]
-
-        # We're gonna add a checkbox.
-        toctree_checkbox_count += 1
-        checkbox_name = f"toctree-checkbox-{toctree_checkbox_count}"
-
-        # Add the "label" for the checkbox which will get filled.
-        if soup.new_tag is None:
-            continue
-        label = soup.new_tag("label", attrs={"for": checkbox_name})
-        label.append(soup.new_tag("i", attrs={"class": "fas fa-chevron-down"}))
-        element.insert(1, label)
-
-        # Add the checkbox that's used to store expanded/collapsed state.
-        checkbox = soup.new_tag(
-            "input",
-            attrs={
-                "type": "checkbox",
-                "class": ["toctree-checkbox"],
-                "id": checkbox_name,
-                "name": checkbox_name,
-            },
-        )
-        # if this has a "current" class, be expanded by default
-        # (by checking the checkbox)
-        if "current" in classes:
-            checkbox.attrs["checked"] = ""
-
-        element.insert(1, checkbox)
-
-
-def _get_local_toctree_for(
-    self: TocTree, indexname: str, docname: str, builder, collapse: bool, **kwargs
-):
-    """Return the "local" TOC nodetree (relative to `indexname`)."""
-    # this is a copy of `TocTree.get_toctree_for`, but where the sphinx version
-    # always uses the "master" doctree:
-    #     doctree = self.env.get_doctree(self.env.config.master_doc)
-    # we here use the `indexname` additional argument to be able to use a subset
-    # of the doctree (e.g. starting at a second level for the sidebar):
-    #     doctree = app.env.tocs[indexname].deepcopy()
-
-    doctree = self.env.tocs[indexname].deepcopy()
-
-    toctrees = []
-    if "includehidden" not in kwargs:
-        kwargs["includehidden"] = True
-    if "maxdepth" not in kwargs or not kwargs["maxdepth"]:
-        kwargs["maxdepth"] = 0
-    else:
-        kwargs["maxdepth"] = int(kwargs["maxdepth"])
-    kwargs["collapse"] = collapse
-
-    for toctreenode in doctree.traverse(addnodes.toctree):
-        toctree = self.resolve(docname, builder, toctreenode, prune=True, **kwargs)
-        if toctree:
-            toctrees.append(toctree)
-    if not toctrees:
-        return None
-    result = toctrees[0]
-    for toctree in toctrees[1:]:
-        result.extend(toctree.children)
-    return result
-
-
-def index_toctree(app, pagename: str, startdepth: int, collapse: bool = True, **kwargs):
-    """
-    Returns the "local" (starting at `startdepth`) TOC tree containing the
-    current page, rendered as HTML bullet lists.
-
-    This is the equivalent of `context["toctree"](**kwargs)` in sphinx
-    templating, but using the startdepth-local instead of global TOC tree.
-    """
-    # this is a variant of the function stored in `context["toctree"]`, which is
-    # defined as `lambda **kwargs: self._get_local_toctree(pagename, **kwargs)`
-    # with `self` being the HMTLBuilder and the `_get_local_toctree` basically
-    # returning:
-    #     return self.render_partial(TocTree(self.env).get_toctree_for(
-    #         pagename, self, collapse, **kwargs))['fragment']
-
-    if "includehidden" not in kwargs:
-        kwargs["includehidden"] = False
-    if kwargs.get("maxdepth") == "":
-        kwargs.pop("maxdepth")
-
-    toctree = TocTree(app.env)
-    ancestors = toctree.get_toctree_ancestors(pagename)
-    try:
-        indexname = ancestors[-startdepth]
-    except IndexError:
-        # eg for index.rst, but also special pages such as genindex, py-modindex, search
-        # those pages don't have a "current" element in the toctree, so we can
-        # directly return an emtpy string instead of using the default sphinx
-        # toctree.get_toctree_for(pagename, app.builder, collapse, **kwargs)
-        return ""
-
-    toctree_element = _get_local_toctree_for(
-        toctree, indexname, pagename, app.builder, collapse, **kwargs
-    )
-    return app.builder.render_partial(toctree_element)["fragment"]
-
-
-def soup_to_python(soup, only_pages=False):
-    """
-    Convert the toctree html structure to python objects which can be used in Jinja.
-
-    Parameters
-    ----------
-    soup : BeautifulSoup object for the toctree
-    only_pages : bool
-        Only include items for full pages in the output dictionary. Exclude
-        anchor links (TOC items with a URL that starts with #)
-
-    Returns
-    -------
-    nav : list of dicts
-        The toctree, converted into a dictionary with key/values that work
-        within Jinja.
-    """
-    # toctree has this structure (caption only for toctree, not toc)
-    #   <p class="caption">...</span></p>
-    #   <ul>
-    #       <li class="toctree-l1"><a href="..">..</a></li>
-    #       <li class="toctree-l1"><a href="..">..</a></li>
-    #       ...
-
-    def extract_level_recursive(ul, navs_list):
-
-        for li in ul.find_all("li", recursive=False):
-            ref = li.a
-            url = ref["href"]
-            title = "".join(map(str, ref.contents))
-            active = "current" in li.get("class", [])
-
-            # If we've got an anchor link, skip it if we wish
-            if only_pages and "#" in url and url != "#":
-                continue
-
-            # Converting the docutils attributes into jinja-friendly objects
-            nav = {}
-            nav["title"] = title
-            nav["url"] = url
-            nav["active"] = active
-
-            navs_list.append(nav)
-
-            # Recursively convert children as well
-            nav["children"] = []
-            ul = li.find("ul", recursive=False)
-            if ul:
-                extract_level_recursive(ul, nav["children"])
-
-    navs = []
-    for ul in soup.find_all("ul", recursive=False):
-        extract_level_recursive(ul, navs)
-    return navs
-
-
-# -----------------------------------------------------------------------------
-
-
-def setup_edit_url(app, pagename, templatename, context, doctree):
-    """Add a function that jinja can access for returning the edit URL of a page."""
-
-    def get_edit_url():
-        """Return a URL for an "edit this page" link."""
-        file_name = f"{pagename}{context['page_source_suffix']}"
-
-        # Make sure that doc_path has a path separator only if it exists (to avoid //)
-        doc_path = context.get("doc_path", "")
-        if doc_path and not doc_path.endswith("/"):
-            doc_path = f"{doc_path}/"
-
-        default_provider_urls = {
-            "bitbucket_url": "https://bitbucket.org",
-            "github_url": "https://github.com",
-            "gitlab_url": "https://gitlab.com",
+    # Remove a duplicate entry of the theme CSS. This is because it is in both:
+    # - theme.conf
+    # - manually linked in `webpack-macros.html`
+    if "css_files" in context:
+        theme_css_name = "_static/styles/pydata-sphinx-theme.css"
+        for i in range(len(context["css_files"])):
+            asset = context["css_files"][i]
+            # TODO: eventually the contents of context['css_files'] etc should probably
+            #       only be _CascadingStyleSheet etc. For now, assume mixed with strings.
+            asset_path = getattr(asset, "filename", str(asset))
+            if asset_path == theme_css_name:
+                del context["css_files"][i]
+                break
+    # Add links for favicons in the topbar
+    for favicon in context.get("theme_favicons", []):
+        icon_type = Path(favicon["href"]).suffix.strip(".")
+        opts = {
+            "rel": favicon.get("rel", "icon"),
+            "sizes": favicon.get("sizes", "16x16"),
+            "type": f"image/{icon_type}",
         }
+        if "color" in favicon:
+            opts["color"] = favicon["color"]
+        # Sphinx will auto-resolve href if it's a local file
+        app.add_css_file(favicon["href"], **opts)
 
-        edit_url_attrs = {}
+    # Add metadata to DOCUMENTATION_OPTIONS so that we can re-use later
+    # Pagename to current page
+    app.add_js_file(None, body=f"DOCUMENTATION_OPTIONS.pagename = '{pagename}';")
+    if isinstance(context.get("theme_switcher"), dict):
+        theme_switcher = context["theme_switcher"]
+        json_url = theme_switcher["json_url"]
+        version_match = theme_switcher["version_match"]
 
-        # ensure custom URL is checked first, if given
-        url_template = context.get("edit_page_url_template")
+        # Add variables to our JavaScript for re-use in our main JS script
+        js = f"""
+        DOCUMENTATION_OPTIONS.theme_version = '{__version__}';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = '{json_url}';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = '{version_match}';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner = {str(context["theme_show_version_warning_banner"]).lower()};
+        """
+        app.add_js_file(None, body=js)
 
-        if url_template is not None:
-            if "file_name" not in url_template:
-                raise ExtensionError(
-                    "Missing required value for `use_edit_page_button`. "
-                    "Ensure `file_name` appears in `edit_page_url_template`: "
-                    f"{url_template}"
-                )
-
-            edit_url_attrs[("edit_page_url_template",)] = url_template
-
-        edit_url_attrs.update(
-            {
-                ("bitbucket_user", "bitbucket_repo", "bitbucket_version"): (
-                    "{{ bitbucket_url }}/{{ bitbucket_user }}/{{ bitbucket_repo }}"
-                    "/src/{{ bitbucket_version }}"
-                    "/{{ doc_path }}{{ file_name }}?mode=edit"
-                ),
-                ("github_user", "github_repo", "github_version"): (
-                    "{{ github_url }}/{{ github_user }}/{{ github_repo }}"
-                    "/edit/{{ github_version }}/{{ doc_path }}{{ file_name }}"
-                ),
-                ("gitlab_user", "gitlab_repo", "gitlab_version"): (
-                    "{{ gitlab_url }}/{{ gitlab_user }}/{{ gitlab_repo }}"
-                    "/-/edit/{{ gitlab_version }}/{{ doc_path }}{{ file_name }}"
-                ),
-            }
-        )
-
-        doc_context = dict(default_provider_urls)
-        doc_context.update(context)
-        doc_context.update(doc_path=doc_path, file_name=file_name)
-
-        for attrs, url_template in edit_url_attrs.items():
-            if all(doc_context.get(attr) not in [None, "None"] for attr in attrs):
-                return jinja2.Template(url_template).render(**doc_context)
-
-        raise ExtensionError(
-            "Missing required value for `use_edit_page_button`. "
-            "Ensure one set of the following in your `html_context` "
-            f"configuration: {sorted(edit_url_attrs.keys())}"
-        )
-
-    context["get_edit_url"] = get_edit_url
-
-    # Ensure that the max TOC level is an integer
-    context["theme_show_toc_level"] = int(context.get("theme_show_toc_level", 1))
+    # Update version number for the "made with version..." component
+    context["theme_version"] = __version__
 
 
-# -----------------------------------------------------------------------------
-
-
-def setup(app):
+def setup(app: Sphinx) -> Dict[str, str]:
+    """Setup the Sphinx application."""
     here = Path(__file__).parent.resolve()
     theme_path = here / "theme" / "pydata_sphinx_theme"
-    app.add_html_theme("pydata_sphinx_theme", theme_path)
+    app.add_html_theme("pydata_sphinx_theme", str(theme_path))
 
-    #app.set_translator("html", BootstrapHTML5Translator)
+    app.set_translator("html", BootstrapHTML5Translator)
     # Read the Docs uses ``readthedocs`` as the name of the build, and also
     # uses a special "dirhtml" builder so we need to replace these both with
     # our custom HTML builder
-    #app.set_translator("readthedocs", BootstrapHTML5Translator, override=True)
+    app.set_translator("readthedocs", BootstrapHTML5Translator, override=True)
     app.set_translator("readthedocsdirhtml", BootstrapHTML5Translator, override=True)
 
-    app.connect("env-updated", update_config)
-    app.connect("html-page-context", setup_edit_url)
-    app.connect("html-page-context", add_toctree_functions)
-    app.connect("html-page-context", update_templates)
+    app.add_post_transform(short_link.ShortenLinkTransform)
 
-    # Include templates for sidebar
-    app.config.templates_path.append(os.fsdecode(theme_path / "_templates"))
+    app.connect("builder-inited", translator.setup_translators)
+    app.connect("builder-inited", update_config)
+    app.connect("html-page-context", edit_this_page.setup_edit_url)
+    app.connect("html-page-context", toctree.add_toctree_functions)
+    app.connect("html-page-context", update_and_remove_templates)
+    app.connect("html-page-context", logo.setup_logo_path)
+    app.connect("html-page-context", utils.set_secondary_sidebar_items)
+    app.connect("build-finished", pygment.overwrite_pygments_css)
+    app.connect("build-finished", logo.copy_logo_images)
 
-    return {"parallel_read_safe": True, "parallel_write_safe": True}
+    # https://www.sphinx-doc.org/en/master/extdev/i18n.html#extension-internationalization-i18n-and-localization-l10n-using-i18n-api
+    app.add_message_catalog("sphinx", here / "locale")
+
+    # Include component templates
+    app.config.templates_path.append(str(theme_path / "components"))
+
+    return {"parallel_read_safe": True, "parallel_write_safe": False}

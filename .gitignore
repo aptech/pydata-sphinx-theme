@@ -46,10 +46,6 @@ coverage.xml
 *.cover
 .hypothesis/
 
-# Translations
-*.mo
-*.pot
-
 # Django stuff:
 *.log
 local_settings.py
@@ -63,7 +59,9 @@ instance/
 
 # Sphinx documentation
 docs/_build/
-docs/demo/generated/
+docs/examples/generated/
+docs/api/
+warnings.txt
 
 # PyBuilder
 target/
@@ -111,3 +109,19 @@ node_modules/
 # Editors
 .vscode
 .idea
+
+# MacOSX store files
+**/.DS_Store
+
+# THEME FILES
+# files from the gallery screenshots
+docs/_static/gallery
+
+# Our site profile tests
+profile.svg
+
+# Compiled translation files (are compiled at build time)
+src/pydata_sphinx_theme/locale/*/*/*.mo
+
+# jupyterlite db
+.jupyterlite.doit.db

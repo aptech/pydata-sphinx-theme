@@ -1,32 +1,46 @@
-# Exclude the encrypted file.
-exclude: github_deploy_key_pandas_dev_pandas_sphinx_theme\.enc
+# Fix the node version to avoid a GLIBC error
+# ref: https://stackoverflow.com/questions/71939099/bitbucket-pipeline-error-installing-pre-commit-ts-lint/71940852#71940852
+default_language_version:
+  node: 16.14.2
 
 repos:
   - repo: https://github.com/pre-commit/mirrors-prettier
-    rev: v2.4.1
+    rev: v2.7.1
     hooks:
       - id: prettier
         # Exclude the HTML, since it doesn't understand Jinja2
-        exclude: .+((\.html)|index\.(.+)\.css)$
+        # exclude also the webpack.config.js file has it embed complete url dificult to prettify
+        # exclude the pytest-regressions folder tests/test_ally
+        exclude: .+\.html|webpack\.config\.js|tests/test_a11y/
 
   - repo: https://github.com/psf/black
-    rev: 20.8b1
+    rev: 22.12.0
     hooks:
       - id: black
-        language_version: python3
 
-  - repo: https://gitlab.com/pycqa/flake8
-    rev: 3.8.3
+  - repo: https://github.com/charliermarsh/ruff-pre-commit
+    rev: "v0.0.215"
     hooks:
-      - id: flake8
+      - id: ruff
 
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.0.1
+  - repo: https://github.com/asottile/pyupgrade
+    rev: v3.3.1
     hooks:
-      - id: check-builtin-literals
-      - id: check-case-conflict
-      - id: check-toml
-      - id: check-yaml
-      - id: debug-statements
-      - id: end-of-file-fixer
-      - id: trailing-whitespace
+      - id: pyupgrade
+        args: [--py37-plus]
+
+  - repo: https://github.com/Riverside-Healthcare/djLint
+    rev: v1.19.7
+    hooks:
+      - id: djlint-jinja
+        types_or: ["html"]
+
+  - repo: https://github.com/PyCQA/doc8
+    rev: v1.1.1
+    hooks:
+      - id: doc8
+
+  - repo: "https://github.com/kynan/nbstripout"
+    rev: "0.5.0"
+    hooks:
+      - id: nbstripout
